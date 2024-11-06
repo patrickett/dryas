@@ -1,28 +1,33 @@
+pub mod tracker;
+
 use serde::{
     de::{self, Deserializer, MapAccess, Visitor},
     Deserialize, Serialize, Serializer,
 };
-use sha1::{Digest, Sha1};
 use std::{fmt, path::PathBuf};
 
-/// Metainfo files (also known as .torrent files) are bencoded dictionaries with the following keys:
+// https://www.bittorrent.org/beps/bep_0003.html
+
+// TODO: unit tests
+// TODO: is it worth our own bencode impl for speed?
+
+/// MetaInfo files (also known as .torrent files) are bencoded dictionaries.
 /// All strings in a .torrent file that contains text must be UTF-8 encoded.
-#[derive(Debug, Deserialize, Serialize)]
-pub struct MetaInfo {
+#[derive(Deserialize, Serialize)]
+pub struct Torrent {
     /// The URL of the tracker.
     announce: String,
-    ///    This maps to a dictionary, with keys described below.
-    info: InfoDictionary,
+    /// This maps to a dictionary, with keys described below.
+    info: Info,
 }
 
-#[derive(Debug)]
 pub enum MetaInfoError {
     InvalidPath,
     UnableToReadFile,
     BencodeParseFailed,
 }
 
-impl TryFrom<PathBuf> for MetaInfo {
+impl TryFrom<PathBuf> for Torrent {
     type Error = MetaInfoError;
 
     fn try_from(path: PathBuf) -> Result<Self, Self::Error> {
@@ -42,24 +47,16 @@ impl TryFrom<PathBuf> for MetaInfo {
     }
 }
 
-impl MetaInfo {
-    pub fn info(&self) {}
-
-    // TODO: put this under InfoDictionary
-    // rename meta_info -> torrent
-    // then this becomes torrent.info.hash()
-    pub fn info_hash(&self) -> String {
-        let bencoded_info = serde_bencode::to_bytes(&self.info).expect("msg");
-        let mut hasher = Sha1::new();
-        hasher.update(bencoded_info);
-        let result = hasher.finalize();
-        hex::encode(result)
+impl Torrent {
+    pub fn info(&self) -> &Info {
+        &self.info
     }
 
     pub fn tracker_url(&self) -> &str {
         &self.announce
     }
 
+    /// Length of the file
     pub const fn len(&self) -> usize {
         match self.info.key {
             Key::File { length } => length,
@@ -74,8 +71,8 @@ impl MetaInfo {
 }
 
 // info dictionary
-#[derive(Debug, Deserialize, Serialize)]
-pub struct InfoDictionary {
+#[derive(Deserialize, Serialize)]
+pub struct Info {
     /// The name key maps to a UTF-8 encoded string which is the suggested name
     /// to save the file (or directory) as. It is purely advisory.
     ///
@@ -98,9 +95,20 @@ pub struct InfoDictionary {
     key: Key,
 }
 
-impl InfoDictionary {
-    fn piece_length(&self) -> usize {
+impl Info {
+    pub fn pieces(&self) -> &Vec<[u8; 20]> {
+        &self.pieces.0
+    }
+
+    pub fn piece_length(&self) -> usize {
         self.piece_length
+    }
+
+    pub fn hash(&self) -> sha1_smol::Digest {
+        let bencoded_info = serde_bencode::to_bytes(&self).expect("failed to bencode info");
+        let mut m = sha1_smol::Sha1::new();
+        m.update(&bencoded_info);
+        m.digest()
     }
 }
 
@@ -128,7 +136,7 @@ impl<'de> Visitor<'de> for KeysVisitor {
     {
         // Temporary storage for fields
         let mut length: Option<usize> = None;
-        let mut files: Option<Vec<FileListItem>> = None;
+        let mut files: Option<Vec<File>> = None;
 
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
@@ -161,9 +169,9 @@ impl<'de> Visitor<'de> for KeysVisitor {
     }
 }
 
-///There is also a key length or a key files, but not both or neither.
+/// There is also a key length or a key files, but not both or neither.
 // NOTE: we did not use serde(untagged) for performance reasons
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
 pub enum Key {
     /// If length is present then the download represents a single file,
     /// otherwise it represents a set of files which go in a directory structure.
@@ -177,20 +185,20 @@ pub enum Key {
     Files {
         /// The files list is the value files maps to, and is a list of
         /// dictionaries containing the following keys:
-        files: Vec<FileListItem>,
+        files: Vec<File>,
     },
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-pub struct FileListItem {
-    /// length - The length of the file, in bytes.
+#[derive(Deserialize, Serialize)]
+pub struct File {
+    /// The length of the file, in bytes.
     length: usize,
-    /// path - A list of UTF-8 encoded strings corresponding to subdirectory names,
+    /// A list of UTF-8 encoded strings corresponding to subdirectory names,
     /// the last of which is the actual file name (a zero length list is an error case).
     path: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Hashes(pub Vec<[u8; 20]>);
 
 struct HashesVisitor;
