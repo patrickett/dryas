@@ -4,7 +4,7 @@ use torrent::Torrent;
 
 /// A CLI/TUI for interacting with torrents.
 ///
-/// https://github.com/patrickett/dryas
+/// https://github.com/patrickett/flud
 #[derive(Parser)]
 #[clap(version)]
 struct Args {
@@ -20,7 +20,7 @@ pub enum MagnetLinkOrFilePath {
 
 #[derive(Subcommand)]
 enum DaemonCommands {
-    /// Starts the dryas daemon. This will be killed when the shell is closed or
+    /// Starts the flud daemon. This will be killed when the shell is closed or
     /// you kill the process with ctrl+c.
     ///
     /// If you want it to last beyond the shell look at... TODO:
@@ -35,13 +35,13 @@ enum DaemonCommands {
         /// You can provide either a magnet link or the path to a torrent file.
         torrent: String,
 
-        /// Optionally set the port for where the dryas daemon is listening.
+        /// Optionally set the port for where the flud daemon is listening.
         ///
         /// Defaults to `1337`
         #[clap(short = 'p', long)]
         daemon_port: Option<u16>,
 
-        /// If not told otherwise, dryas writes download torrent data to `/Downloads`.
+        /// If not told otherwise, flud writes download torrent data to `/Downloads`.
         /// It can be instructed instead to save that data to a custom location using `-o` or `--output`q
         #[clap(short, long)]
         output: PathBuf,
@@ -53,17 +53,17 @@ enum Command {
     /// Open a standalone TUI terminal torrent client.
     ///
     /// Things will only download while this is open.
-    /// To have this run as a background process look into the dryas daemon.
-    // TODO: internally we might just run our own instance of the dryas demon and connect to it as
+    /// To have this run as a background process look into the flud daemon.
+    // TODO: internally we might just run our own instance of the flud demon and connect to it as
     // if it was opened from this command. Then we can use the same logic for if it was ran as just a client
     // or as if it was a daemon with a client attached to it
     Open,
-    /// Interact with the dryas daemon/background process.
+    /// Interact with the flud daemon/background process.
     ///
     /// If no subcommand arguments are provided open a terminal ui
     /// to let you see what the daemon is doing.
     Daemon {
-        /// Optionally set the port for where the dryas daemon is listening
+        /// Optionally set the port for where the flud daemon is listening
         ///
         /// Defaults to `1337`
         #[clap(short, long)]
@@ -95,9 +95,9 @@ fn main() {
                 daemon_command,
             } => {
                 if let Some(_d_command) = daemon_command {
-                    todo!("run some command for the dryas daemon")
+                    todo!("run some command for the flud daemon")
                 } else {
-                    todo!("open tui while connecting to the dryas daemon")
+                    todo!("open tui while connecting to the flud daemon")
                 }
             }
             Command::Download { torrent: _ } => {
@@ -142,13 +142,13 @@ fn main() {
 
 // [########################################################                                     ]
 
-// ~/.dryas/settings.toml (this is what the settings tab edits)
+// ~/.flud/settings.toml (this is what the settings tab edits)
 
 // instead of a database we have a folder based state with .torrent files
-// ~/.dryas/downloading
-// ~/.dryas/paused
-// ~/.dryas/seeding
-// ~/.dryas/completed
+// ~/.flud/downloading
+// ~/.flud/paused
+// ~/.flud/seeding
+// ~/.flud/completed
 
 // downloading->(optional paused)->seeding->completed
 
@@ -164,4 +164,4 @@ fn main() {
 // so that we can see them when we open the client. and all the daemon does is exactly what the
 // client does but constantly without showing anything
 //
-// dryas add "magnet?=asd" -> creates .torrent in /downloading ->
+// flud add "magnet?=asd" -> creates .torrent in /downloading ->

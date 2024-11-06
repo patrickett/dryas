@@ -1,5 +1,5 @@
 [package]
-name = "dryas"
+name = "flud"
 authors = ["patrickett <patrickett@protonmail.com>"]
 version = "0.1.0"
 edition = "2021"
