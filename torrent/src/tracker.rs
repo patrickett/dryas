@@ -1,12 +1,54 @@
-use std::net::SocketAddrV4;
+use std::net::{Ipv4Addr, SocketAddrV4};
 
+use rand::Rng;
 use serde::{
-    de::{self, Deserializer, MapAccess, Visitor},
+    de::{self, Deserializer, Visitor},
     Deserialize, Serialize, Serializer,
 };
 use std::fmt;
 
-#[derive(serde::Deserialize)]
+use crate::{bool_from_int, meta_info::MetaInfo};
+
+// [u8; 20]
+pub fn random_peer_id() -> String {
+    let mut rng = rand::thread_rng();
+    let random_bytes: [u8; 20] = rng.gen();
+    let s = std::str::from_utf8(&random_bytes).expect("msg");
+    s.to_owned()
+}
+
+pub struct Tracker;
+
+impl Tracker {
+    pub fn request(torrent: &MetaInfo) -> Result<TrackerResponse, ()> {
+        let request = TrackerRequest::new_compact(torrent);
+
+        let query_params =
+            serde_urlencoded::to_string(request).expect("failed to urlencode TrackerRequest");
+
+        let tracker_url = torrent.tracker_url();
+
+        let Ok(mut url) = reqwest::Url::parse(&tracker_url) else {
+            return Err(());
+        };
+
+        url.set_query(Some(&query_params));
+
+        let Ok(response) = reqwest::blocking::get(url) else {
+            return Err(());
+        };
+
+        let Ok(body) = response.bytes() else {
+            return Err(());
+        };
+
+        let res: TrackerResponse = serde_bencode::from_bytes(&body).expect("msg");
+
+        Ok(res)
+    }
+}
+
+#[derive(serde::Deserialize, Serialize)]
 pub struct TrackerRequest {
     /// The 20 byte sha1 hash of the bencoded form of the info value from the
     /// metainfo file. This value will almost certainly have to be escaped.
@@ -20,15 +62,16 @@ pub struct TrackerRequest {
     /// Conversely that means clients must either reject invalid metainfo files
     /// or extract the substring directly. They must not perform a
     /// decode-encode roundtrip on invalid data.
-    info_hash: sha1_smol::Digest,
+    info_hash: String,
     /// A string of length 20 which this downloader uses as its id.
     /// Each downloader generates its own id at random at the start of a
-    /// new download. This value will also almost certainly have to be escaped.
+    /// new download. This value will also almost certainly have to be escaped. [u8; 20]
     peer_id: String,
     /// An optional parameter giving the IP (or dns name) which this peer is at.
     /// Generally used for the origin if it's on the same machine as the tracker.
-    // ip: String,
+    ip: Option<String>,
     /// The port number this peer is listening on.
+    ///
     /// Common behavior is for a downloader to try to listen on port 6881 and if
     /// that port is taken try 6882, then 6883, etc. and give up after 6889.
     port: u16,
@@ -43,32 +86,36 @@ pub struct TrackerRequest {
     /// check and had to be re-downloaded.
     left: usize,
     /// https://www.bittorrent.org/beps/bep_0023.html
+    /// default=1
     #[serde(deserialize_with = "bool_from_int")]
-    compact: bool, // default=1
-    /// This is an optional key which maps to started, completed, or stopped
-    /// (or empty, which is the same as not being present).
-    /// If not present, this is one of the announcements done at regular intervals.
-    /// An announcement using started is sent when a download first begins,
-    /// and one using completed is sent when the download is complete.
-    /// No completed is sent if the file was complete when started.
-    /// Downloaders send an announcement using stopped when they cease downloading.
-    event: String,
+    compact: bool,
+    // This is an optional key which maps to started, completed, or stopped
+    // (or empty, which is the same as not being present).
+    // If not present, this is one of the announcements done at regular intervals.
+    // An announcement using started is sent when a download first begins,
+    // and one using completed is sent when the download is complete.
+    // No completed is sent if the file was complete when started.
+    // Downloaders send an announcement using stopped when they cease downloading.
+    // event: String,
 }
 
-fn bool_from_int<'de, D>(deserializer: D) -> Result<bool, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    match u8::deserialize(deserializer)? {
-        0 => Ok(false),
-        1 => Ok(true),
-        other => {
-            // Err(de::Error::invalid_value(
-            //     Unexpected::Unsigned(other as u64),
-            //     &"zero or one",
-            // ))
+impl TrackerRequest {
+    pub fn new_compact(meta_info: &MetaInfo) -> Self {
+        let b = meta_info.info().hash().bytes();
+        let b: &[u8] = &b;
 
-            todo!()
+        let info_hash =
+            serde_urlencoded::from_bytes(b).expect("failed to urlencode info_hash bytes");
+
+        Self {
+            info_hash,
+            peer_id: String::from("20129487650173049587"),
+            port: 6881,
+            ip: None,
+            uploaded: 0,
+            downloaded: 0,
+            left: meta_info.len(),
+            compact: true,
         }
     }
 }
@@ -76,7 +123,7 @@ where
 /**
     Tracker responses are bencoded dictionaries.
 
-    If a tracker response has a key failure reason, then that maps to a human
+    If a tracker response has a key `failure reason`, then that maps to a human
     readable string which explains why the query failed, and no other keys are
     required.
 
@@ -91,7 +138,20 @@ where
     happens or they need more peers.
 */
 #[derive(serde::Deserialize)]
-pub struct TrackerResponse {
+#[serde(untagged)]
+pub enum TrackerResponse {
+    Success(TrackerPeerResponse),
+    Failure(TrackerFailureResponse),
+}
+
+#[derive(serde::Deserialize)]
+pub struct TrackerFailureResponse {
+    #[serde(rename = "failure reason")]
+    pub failure_reason: String,
+}
+
+#[derive(serde::Deserialize)]
+pub struct TrackerPeerResponse {
     /// The number of seconds the downloader should wait between regular rerequests
     interval: usize,
     /// list of dictionaries corresponding to peers
@@ -104,38 +164,39 @@ pub struct TrackerResponse {
     // It is common to announce over a UDP tracker protocol as well.
 }
 
+impl TrackerPeerResponse {
+    pub fn peers(&self) -> &Vec<SocketAddrV4> {
+        &self.peers.0
+    }
+}
+
 pub struct Peers(pub Vec<SocketAddrV4>);
 pub struct PeersVisitor;
 
-impl Visitor<'_> for PeersVisitor {
+impl<'de> Visitor<'de> for PeersVisitor {
     type Value = Peers;
 
     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        formatter.write_str("6 bytes, first 4 are the ipv4 last 2 are port")
+        formatter.write_str("6 bytes per peer: 4 bytes for IPv4 address and 2 bytes for port")
     }
 
     fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
     where
         E: de::Error,
     {
-        todo!()
-        // let len = v.len();
-        // if len % 6 != 0 {
-        //     return Err(E::custom(format!("length is {}", len)));
-        // }
+        if v.len() % 6 != 0 {
+            return Err(E::custom(format!("invalid length: {}", v.len())));
+        }
 
-        // // Preallocate the vector with the exact required capacity
-        // let count = len / 20;
-        // let mut hashes = Vec::with_capacity(count);
+        // Preallocate Vec with the expected capacity
+        let mut peers = Vec::with_capacity(v.len() / 6);
+        for chunk in v.chunks_exact(6) {
+            let ip = Ipv4Addr::new(chunk[0], chunk[1], chunk[2], chunk[3]);
+            let port = u16::from_be_bytes([chunk[4], chunk[5]]);
+            peers.push(SocketAddrV4::new(ip, port));
+        }
 
-        // // Manually chunk the bytes into arrays of length 20
-        // for chunk in v.chunks_exact(20) {
-        //     let mut array = [0u8; 20]; // Pre-allocate the array
-        //     array.copy_from_slice(chunk); // Copy the data directly
-        //     hashes.push(array); // Push the array into the Vec
-        // }
-
-        // Ok(Peers(hashes))
+        Ok(Peers(peers))
     }
 }
 
@@ -153,12 +214,12 @@ impl Serialize for Peers {
     where
         S: Serializer,
     {
-        todo!()
+        // Preallocate Vec with the exact number of bytes needed
+        let mut slice = Vec::with_capacity(6 * self.0.len());
+        for peer in &self.0 {
+            slice.extend_from_slice(&peer.ip().octets());
+            slice.extend_from_slice(&peer.port().to_be_bytes());
+        }
+        serializer.serialize_bytes(&slice)
     }
 }
-
-// pub struct Peer {
-//     peer_id: usize,
-//     ip: String,
-//     port: u16,
-// }

@@ -1,6 +1,12 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
-use torrent::Torrent;
+use torrent::{
+    meta_info::{self, MetaInfo},
+    tracker::Tracker,
+};
+pub mod client;
+pub mod config;
+pub mod tui;
 
 /// A CLI/TUI for interacting with torrents.
 ///
@@ -77,6 +83,11 @@ enum Command {
         path: PathBuf,
     },
 
+    Peers {
+        /// You can provide a path to a torrent file.
+        path: PathBuf,
+    },
+
     /// Start downloading the provided magnet link or torrent file path
     Download {
         /// You can provide either a magnet link or the path to a torrent file.
@@ -87,9 +98,11 @@ enum Command {
 fn main() {
     let args = Args::parse();
 
+    // let config_file = config::get_or_create();
+
     if let Some(command) = args.cmd {
         match command {
-            Command::Open => todo!(),
+            Command::Open => tui::run(),
             Command::Daemon {
                 port: _,
                 daemon_command,
@@ -105,10 +118,11 @@ fn main() {
                 todo!()
             }
             Command::Info { path } => {
-                if let Ok(torrent) = Torrent::try_from(path) {
+                if let Ok(torrent) = MetaInfo::try_from(path) {
                     println!("info hash: {}", torrent.info().hash());
                     println!("piece length: {}", torrent.info().piece_length());
                     // println!("piece hashes:");
+                    // let _req = TrackerRequest::new_compact(&torrent);
 
                     // for hash in torrent.info().pieces() {
                     //     println!("{}", hex::encode(hash))
@@ -117,10 +131,48 @@ fn main() {
                     eprintln!("unable to parse torrent file")
                 }
             }
+            Command::Peers { path } => {
+                match MetaInfo::try_from(path) {
+                    Ok(torrent) => {
+                        println!("info hash: {}", torrent.info().hash());
+                        println!("piece length: {}", torrent.info().piece_length());
+                        println!("{:#?}", torrent);
+                        // println!("piece hashes:");
+                        let Ok(res) = Tracker::request(&torrent) else {
+                            todo!()
+                        };
+
+                        match res {
+                            torrent::tracker::TrackerResponse::Success(tracker_peer_response) => {
+                                for peer in tracker_peer_response.peers() {
+                                    println!("{}:{}", peer.ip(), peer.port())
+                                }
+                            }
+                            torrent::tracker::TrackerResponse::Failure(
+                                tracker_failure_response,
+                            ) => {
+                                eprintln!("{}", tracker_failure_response.failure_reason)
+                            }
+                        }
+
+                        // for hash in torrent.info().pieces() {
+                        //     println!("{}", hex::encode(hash))
+                        // }
+                    }
+                    Err(err) => match err {
+                        meta_info::MetaInfoError::InvalidPath => eprintln!("invalid path"),
+                        meta_info::MetaInfoError::UnableToReadFile => {
+                            eprintln!("unable to read file")
+                        }
+                        meta_info::MetaInfoError::BencodeParseFailed => {
+                            eprintln!("bencode parse failed")
+                        }
+                    },
+                }
+            }
         }
     } else {
-        todo!()
-        // open_standalone_tui()
+        tui::run()
     }
 }
 
